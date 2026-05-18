@@ -1,186 +1,243 @@
-import RPi.GPIO as GPIO
+import serial
 import time
+import threading
+
+from speak import speak
 
 # ==============================
-# MOTOR DRIVER PINS
+# CONFIG
 # ==============================
-IN1 = 26
-IN2 = 19
-IN3 = 13
-IN4 = 6
 
-# ==============================
-# ULTRASONIC SENSOR PINS
-# Sensor 1 -> TRIG=8  ECHO=11
-# Sensor 2 -> TRIG=9  ECHO=10
-# ==============================
-TRIG1 = 8
-ECHO1 = 11
+PORT = '/dev/serial0'
+BAUD = 115200
 
-TRIG2 = 9
-ECHO2 = 10
+esp = None
+
+base_connected = False
+
+last_spoken_state = None
 
 # ==============================
-# GPIO SETUP
+# SPEAK STATE CHANGES
 # ==============================
-GPIO.setmode(GPIO.BCM)
-GPIO.setwarnings(False)
 
-# Motor pins
-GPIO.setup(IN1, GPIO.OUT)
-GPIO.setup(IN2, GPIO.OUT)
-GPIO.setup(IN3, GPIO.OUT)
-GPIO.setup(IN4, GPIO.OUT)
+def speak_state(state):
 
-# Ultrasonic pins
-GPIO.setup(TRIG1, GPIO.OUT)
-GPIO.setup(ECHO1, GPIO.IN)
+    global last_spoken_state
 
-GPIO.setup(TRIG2, GPIO.OUT)
-GPIO.setup(ECHO2, GPIO.IN)
+    if last_spoken_state == state:
+        return
 
-GPIO.output(TRIG1, False)
-GPIO.output(TRIG2, False)
+    last_spoken_state = state
 
-time.sleep(2)
+    speak(state)
 
 # ==============================
-# STOP MOTORS
+# CONNECT FUNCTION
 # ==============================
-def stop():
-    print("🛑 Stopped")
 
-    GPIO.output(IN1, 0)
-    GPIO.output(IN2, 0)
-    GPIO.output(IN3, 0)
-    GPIO.output(IN4, 0)
+def connect_esp():
 
+    global esp
+    global base_connected
 
-# ==============================
-# ULTRASONIC DISTANCE FUNCTION
-# ==============================
-def get_distance(trig, echo):
+    try:
 
-    # Send trigger pulse
-    GPIO.output(trig, True)
-    time.sleep(0.00001)
-    GPIO.output(trig, False)
+        print(f"🔍 Connecting to base on {PORT}")
 
-    start_time = time.time()
-    stop_time = time.time()
+        esp = serial.Serial(
+            PORT,
+            BAUD,
+            timeout=2
+        )
 
-    timeout = time.time()
+        time.sleep(2)
 
-    # Wait for echo HIGH
-    while GPIO.input(echo) == 0:
-        start_time = time.time()
+        # Clear garbage
+        esp.reset_input_buffer()
 
-        if time.time() - timeout > 0.03:
-            return 999
+        # Ask identity
+        esp.write(b'WHO_ARE_YOU\n')
 
-    timeout = time.time()
+        time.sleep(0.5)
 
-    # Wait for echo LOW
-    while GPIO.input(echo) == 1:
-        stop_time = time.time()
+        response = (
+            esp.readline()
+            .decode()
+            .strip()
+        )
 
-        if time.time() - timeout > 0.03:
-            return 999
+        print(f"📨 Response: {response}")
 
-    # Calculate distance
-    time_elapsed = stop_time - start_time
-    distance = (time_elapsed * 34300) / 2
+        # Verify node
+        if response != "BASE_NODE":
 
-    return round(distance, 2)
+            print("❌ Wrong device connected")
 
+            esp.close()
 
-# ==============================
-# CHECK SAFE DISTANCE
-# ==============================
-def is_safe():
+            esp = None
 
-    d1 = get_distance(TRIG1, ECHO1)
-    d2 = get_distance(TRIG2, ECHO2)
+            base_connected = False
 
-    print(f"📏 Sensor1: {d1} cm")
-    print(f"📏 Sensor2: {d2} cm")
+            speak_state("Base not connected")
 
-    # Both sensors must be greater than 25 cm
-    if d1 > 25 and d2 > 25:
+            return False
+
+        print("✅ Base connected")
+
+        base_connected = True
+
+        speak_state("Base connected")
+
         return True
 
-    print("⚠️ Obstacle Detected!")
-    stop()
-    return False
+    except Exception as e:
 
+        print(f"❌ Base connection failed: {e}")
 
-# ==============================
-# FORWARD
-# ==============================
-def forward(duration=None):
+        try:
+            esp.close()
+        except:
+            pass
 
-    if not is_safe():
-        return
+        esp = None
 
-    print("🚗 Moving Forward")
+        if base_connected:
 
-    GPIO.output(IN1, 1)
-    GPIO.output(IN2, 0)
-    GPIO.output(IN3, 1)
-    GPIO.output(IN4, 0)
+            speak_state("Base disconnected")
 
-    if duration:
-        time.sleep(duration)
-        stop()
+        else:
 
-# ==============================
-# BACKWARD
-# ==============================
-def backward(duration=None):
+            speak_state("Base not connected")
 
-    if not is_safe():
-        return
+        base_connected = False
 
-    print("🔙 Moving Backward")
-
-    GPIO.output(IN1, 0)
-    GPIO.output(IN2, 1)
-    GPIO.output(IN3, 0)
-    GPIO.output(IN4, 1)
-
-    if duration:
-        time.sleep(duration)
-        stop()
+        return False
 
 # ==============================
-# LEFT
+# INITIAL CONNECTION
 # ==============================
-def left(duration=1):
 
-    print("⬅️ Turning Left")
-
-    GPIO.output(IN1, 0)
-    GPIO.output(IN2, 1)
-    GPIO.output(IN3, 1)
-    GPIO.output(IN4, 0)
-
-    time.sleep(duration)
-
-    stop()
-
+connect_esp()
 
 # ==============================
-# RIGHT
+# MONITOR THREAD
 # ==============================
-def right(duration=0.4):
 
-    print("➡️ Turning Right")
+def monitor_connection():
 
-    GPIO.output(IN1, 1)
-    GPIO.output(IN2, 0)
-    GPIO.output(IN3, 0)
-    GPIO.output(IN4, 1)
+    global esp
+    global base_connected
 
-    time.sleep(duration)
+    while True:
 
-    stop()
+        if esp is None or not esp.is_open:
+
+            connect_esp()
+
+        else:
+
+            try:
+
+                # Heartbeat
+                esp.write(b'PING\n')
+
+                time.sleep(0.2)
+
+                response = (
+                    esp.readline()
+                    .decode()
+                    .strip()
+                )
+
+                if response != "PONG":
+
+                    raise Exception(
+                        "Heartbeat failed"
+                    )
+
+            except Exception as e:
+
+                print(f"❌ Base disconnected: {e}")
+
+                try:
+                    esp.close()
+                except:
+                    pass
+
+                esp = None
+
+                base_connected = False
+
+                speak_state("Base disconnected")
+
+        time.sleep(5)
+
+# Start monitor thread
+threading.Thread(
+    target=monitor_connection,
+    daemon=True
+).start()
+
+# ==============================
+# SEND COMMAND
+# ==============================
+
+def send(cmd):
+
+    global esp
+    global base_connected
+
+    # Auto reconnect
+    if esp is None or not esp.is_open:
+
+        print("🔄 Trying to reconnect base...")
+
+        if not connect_esp():
+
+            print("❌ Cannot send command")
+
+            return False
+
+    try:
+
+        esp.write(f"{cmd}\n".encode())
+
+        return True
+
+    except Exception as e:
+
+        print(f"❌ Send failed: {e}")
+
+        try:
+            esp.close()
+        except:
+            pass
+
+        esp = None
+
+        base_connected = False
+
+        speak_state("Base disconnected")
+
+        return False
+
+# ==============================
+# MOVEMENT FUNCTIONS
+# ==============================
+
+def forward():
+    send('F')
+
+def backward():
+    send('B')
+
+def left():
+    send('L')
+
+def right():
+    send('R')
+
+def stop():
+    send('S')

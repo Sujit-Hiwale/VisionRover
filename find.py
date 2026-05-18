@@ -3,24 +3,27 @@ import cv2
 import time
 
 # -----------------------------
-# Your Modules
+# YOUR MODULES
 # -----------------------------
 import motor
 import face
 import smallFaces
 import speak
 import servo
+import robot_state
 
 # -----------------------------
 # CONFIG
 # -----------------------------
 YOLO_SIZE = 320
-YOLO_CONF = 0.45
 
-SEARCH_TIMEOUT = 15
+YOLO_CONF = 0.45
 
 DEBUG_VIEW = False
 
+# -----------------------------
+# SEARCH CONFIG
+# -----------------------------
 SCAN_ANGLES = [
     90,
     65,
@@ -37,18 +40,26 @@ SCAN_ANGLES = [
     90
 ]
 
+MAX_ROTATIONS = 8
+
+CENTER_TOLERANCE = 60
+
+CLOSE_WIDTH = 170
+
 # -----------------------------
 # LOAD YOLO
 # -----------------------------
 model = YOLO("yolo11n.pt")
 
 # -----------------------------
-# CAMERA SETUP
+# CAMERA
 # -----------------------------
 cap = cv2.VideoCapture(0)
 
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+
 cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
 time.sleep(2)
@@ -70,6 +81,28 @@ def set_expression(mode):
         smallFaces.neutral
     )()
 
+# -----------------------------
+# CHECK INTERRUPT
+# -----------------------------
+def interrupted():
+
+    if robot_state.interrupt_requested:
+
+        print("🛑 Search interrupted")
+
+        robot_state.interrupt_requested = False
+
+        motor.stop()
+
+        servo.move_neck(
+            servo.NECK_CENTER
+        )
+
+        smallFaces.neutral()
+
+        return True
+
+    return False
 
 # -----------------------------
 # DETECT TARGET
@@ -79,101 +112,238 @@ def detect_target(target_name):
     ret, frame = cap.read()
 
     if not ret:
-        return False
+        return None
 
     target_name = target_name.lower()
 
-    # ---------------------------------
-    # YOLO INFERENCE
-    # ---------------------------------
-    results = model(
-        frame,
-        imgsz=YOLO_SIZE,
-        conf=YOLO_CONF,
-        verbose=False
-    )
+    # -----------------------------
+    # KNOWN FACE SEARCH
+    # -----------------------------
+    if face.is_known_person(
+        target_name
+    ):
 
-    found = False
+        result = face.recognize_face(
+            frame
+        )
 
-    # ---------------------------------
-    # OPTIONAL DEBUG DRAWING
-    # ---------------------------------
+        if result is not None:
 
-    # Uncomment later if needed
-    #
-    # annotated = results[0].plot()
-    #
-    # cv2.imshow("Robot Vision", annotated)
-    # cv2.waitKey(1)
+            recognized_name = (
+                result["name"]
+                .lower()
+            )
 
-    # ---------------------------------
-    # FACE DETECTION
-    # ONLY FOR PERSON
-    # ---------------------------------
-    if target_name == "person":
+            if recognized_name == target_name:
+
+                x, y, w, h = (
+                    result["box"]
+                )
+
+                center_x = x + w // 2
+
+                return {
+                    "found": True,
+                    "center_x": center_x,
+                    "width": w,
+                    "type": "face"
+                }
+
+    # -----------------------------
+    # GENERIC PERSON SEARCH
+    # -----------------------------
+    elif target_name == "person":
 
         gray = cv2.cvtColor(
             frame,
             cv2.COLOR_BGR2GRAY
         )
 
-        faces = face.face_detector.detectMultiScale(
-            gray,
-            scaleFactor=1.2,
-            minNeighbors=5
+        faces = (
+            face.face_detector
+            .detectMultiScale(
+                gray,
+                scaleFactor=1.2,
+                minNeighbors=5,
+                minSize=(80, 80)
+            )
         )
 
         if len(faces) > 0:
+
+            x, y, w, h = faces[0]
+
+            center_x = x + w // 2
+
+            return {
+                "found": True,
+                "center_x": center_x,
+                "width": w,
+                "type": "person"
+            }
+
+    # -----------------------------
+    # YOLO OBJECT SEARCH
+    # -----------------------------
+    else:
+
+        results = model(
+            frame,
+            imgsz=YOLO_SIZE,
+            conf=YOLO_CONF,
+            verbose=False
+        )
+
+        for r in results:
+
+            for box in r.boxes:
+
+                cls_id = int(
+                    box.cls[0]
+                )
+
+                label = (
+                    model.names[cls_id]
+                    .lower()
+                )
+
+                confidence = float(
+                    box.conf[0]
+                )
+
+                if confidence < YOLO_CONF:
+                    continue
+
+                if label == target_name:
+
+                    x1, y1, x2, y2 = map(
+                        int,
+                        box.xyxy[0]
+                    )
+
+                    width = x2 - x1
+
+                    center_x = (
+                        x1 + x2
+                    ) // 2
+
+                    # -----------------------------
+                    # DEBUG WINDOW
+                    # -----------------------------
+                    if DEBUG_VIEW:
+
+                        annotated = (
+                            results[0].plot()
+                        )
+
+                        cv2.imshow(
+                            "Robot Vision",
+                            annotated
+                        )
+
+                        cv2.waitKey(1)
+
+                    return {
+                        "found": True,
+                        "center_x": center_x,
+                        "width": width,
+                        "type": "object"
+                    }
+
+    return None
+
+# -----------------------------
+# TRACK TARGET
+# -----------------------------
+def track_target(target_name):
+
+    print(
+        f"🎯 Tracking {target_name}"
+    )
+
+    announced_found = False
+
+    while True:
+
+        # -----------------------------
+        # INTERRUPT
+        # -----------------------------
+        if interrupted():
+            return False
+
+        data = detect_target(
+            target_name
+        )
+
+        # -----------------------------
+        # LOST TARGET
+        # -----------------------------
+        if data is None:
+
+            print("❌ Target lost")
+
+            motor.stop()
+
+            return False
+
+        # -----------------------------
+        # FOUND
+        # -----------------------------
+        if not announced_found:
+
+            set_expression("found")
+
+            speak.speak(
+                f"{target_name} found"
+            )
+
+            announced_found = True
+
+        center_x = data["center_x"]
+
+        width = data["width"]
+
+        error = center_x - 320
+
+        # -----------------------------
+        # ALIGN ROBOT
+        # -----------------------------
+        if error < -CENTER_TOLERANCE:
+
+            print("⬅️ Target Left")
+
+            motor.left(0.2)
+
+        elif error > CENTER_TOLERANCE:
+
+            print("➡️ Target Right")
+
+            motor.right(0.2)
+
+        else:
+
+            motor.stop()
+
+        # -----------------------------
+        # MOVE FORWARD
+        # -----------------------------
+        if width < CLOSE_WIDTH:
+
+            print(
+                "🚗 Approaching target"
+            )
+
+            motor.forward()
+
+        else:
+
+            print("🛑 Target reached")
+
+            motor.stop()
+
             return True
 
-    # ---------------------------------
-    # YOLO OBJECT DETECTION
-    # ---------------------------------
-    for r in results:
-
-        for box in r.boxes:
-
-            cls_id = int(box.cls[0])
-
-            label = model.names[cls_id].lower()
-
-            confidence = float(box.conf[0])
-
-            if confidence < YOLO_CONF:
-                continue
-
-            # Exact match only
-            if target_name == label:
-
-                found = True
-
-                # ---------------------------------
-                # OPTIONAL TARGET TRACKING
-                # ---------------------------------
-
-                # Uncomment later if needed
-
-                # x1, y1, x2, y2 = map(
-                #     int,
-                #     box.xyxy[0]
-                # )
-
-                # object_x = (x1 + x2) // 2
-                # frame_center = 320
-
-                # error = object_x - frame_center
-
-                # servo.rotate_neck(
-                #     int(error * 0.03)
-                # )
-
-                break
-
-        if found:
-            break
-
-    return found
-
+        time.sleep(0.1)
 
 # -----------------------------
 # SCAN AREA
@@ -182,35 +352,35 @@ def scan_area(target_name):
 
     set_expression("searching")
 
-    print("🔍 Scanning Area")
-
-    start_time = time.time()
+    print("🔍 Scanning area")
 
     for angle in SCAN_ANGLES:
 
-        # Timeout protection
-        if time.time() - start_time > SEARCH_TIMEOUT:
-            break
+        # -----------------------------
+        # INTERRUPT
+        # -----------------------------
+        if interrupted():
+            return False
 
         servo.move_neck(angle)
 
-        # Small stabilization delay
-        time.sleep(0.05)
+        time.sleep(0.25)
 
-        if detect_target(target_name):
+        data = detect_target(
+            target_name
+        )
+
+        if data is not None:
 
             motor.stop()
 
-            set_expression("found")
-
-            print(f"✅ {target_name} found")
-
-            speak.speak(f"{target_name} found")
+            servo.move_neck(
+                servo.NECK_CENTER
+            )
 
             return True
 
     return False
-
 
 # -----------------------------
 # ROTATE BODY
@@ -219,64 +389,79 @@ def rotate_body():
 
     set_expression("turning")
 
-    print("🔄 Rotating Robot")
+    print("🔄 Rotating robot")
 
-    motor.left(0.8)
+    motor.left(0.7)
 
-    time.sleep(0.3)
+    time.sleep(0.4)
 
+    motor.stop()
 
 # -----------------------------
 # MAIN FIND FUNCTION
 # -----------------------------
 def find(target_name):
 
-    target_name = target_name.lower()
+    target_name = (
+        target_name
+        .strip()
+        .lower()
+    )
 
-    print(f"\n🔍 Looking for {target_name}")
+    robot_state.interrupt_requested = False
 
-    speak.speak(f"Looking for {target_name}")
+    print(
+        f"\n🔍 Looking for {target_name}"
+    )
 
-    set_expression("searching")
+    speak.speak(
+        f"Looking for {target_name}"
+    )
 
     servo.move_neck(
         servo.NECK_CENTER
     )
 
-    # ---------------------------------
-    # FRONT SEARCH
-    # ---------------------------------
-    found = scan_area(target_name)
+    rotation_count = 0
 
-    if found:
+    # -----------------------------
+    # SEARCH LOOP
+    # -----------------------------
+    while rotation_count < MAX_ROTATIONS:
 
-        servo.move_neck(
-            servo.NECK_CENTER
+        # -----------------------------
+        # INTERRUPT
+        # -----------------------------
+        if interrupted():
+            return False
+
+        found = scan_area(
+            target_name
         )
 
-        return True
+        # -----------------------------
+        # FOUND
+        # -----------------------------
+        if found:
 
-    # ---------------------------------
-    # ROTATE BODY
-    # ---------------------------------
-    rotate_body()
+            print(
+                f"✅ {target_name} found"
+            )
 
-    # ---------------------------------
-    # SECOND SEARCH
-    # ---------------------------------
-    found = scan_area(target_name)
+            return track_target(
+                target_name
+            )
 
-    if found:
+        # -----------------------------
+        # ROTATE BODY
+        # -----------------------------
+        rotate_body()
 
-        servo.move_neck(
-            servo.NECK_CENTER
-        )
+        rotation_count += 1
 
-        return True
-
-    # ---------------------------------
+    # -----------------------------
     # NOT FOUND
-    # ---------------------------------
+    # -----------------------------
     motor.stop()
 
     servo.move_neck(
@@ -285,12 +470,22 @@ def find(target_name):
 
     set_expression("not_found")
 
-    speak.speak(f"{target_name} not found")
+    speak.speak(
+        f"{target_name} not found"
+    )
 
-    print(f"❌ {target_name} not found")
+    print(
+        f"❌ {target_name} not found"
+    )
 
     return False
 
+# -----------------------------
+# STOP SEARCH
+# -----------------------------
+def stop_search():
+
+    robot_state.interrupt_requested = True
 
 # -----------------------------
 # CLEANUP
@@ -305,7 +500,6 @@ def cleanup():
 
     motor.stop()
 
-
 # -----------------------------
 # TEST
 # -----------------------------
@@ -314,8 +508,6 @@ if __name__ == "__main__":
     try:
 
         print("✅ Find module loaded")
-
-        find("person")
 
     except KeyboardInterrupt:
 

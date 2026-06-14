@@ -12,8 +12,8 @@ Controls:
 // ================================
 // MOTOR PINS
 // ================================
-#define IN1 26
-#define IN2 27
+#define IN1 27
+#define IN2 26
 #define IN3 14
 #define IN4 12
 
@@ -32,8 +32,8 @@ Controls:
 // ================================
 // SAFETY DISTANCES
 // ================================
-const int FRONT_SAFE = 25;
-const int REAR_SAFE  = 20;
+const int FRONT_SAFE = 10;
+const int REAR_SAFE  = 10;
 
 // ================================
 // GLOBALS
@@ -68,8 +68,6 @@ void setup() {
   pinMode(ECHO_REAR, INPUT);
 
   stopMotors();
-
-  Serial.println("BASE_NODE");
 }
 
 // ================================
@@ -117,12 +115,12 @@ void loop() {
   // WATCHDOG
   // ==============================
 
-  if(millis() - lastCommandTime > 1000) {
+  /*if(millis() - lastCommandTime > 1000) {
 
     stopMotors();
 
     currentCommand = 'S';
-  }
+  }*/
 
   // ==============================
   // EXECUTE MOTION
@@ -130,16 +128,13 @@ void loop() {
 
   executeCommand();
 
-  delay(50);
+  delay(20);
 }
 
 // ================================
 // PROCESS COMMAND
 // ================================
 void processCommand(String cmd) {
-
-  Serial.print("CMD: ");
-  Serial.println(cmd);
 
   // ==============================
   // NODE DISCOVERY
@@ -210,7 +205,10 @@ void executeCommand() {
 
     case 'F':
 
-      if(frontDistance > FRONT_SAFE) {
+      if(
+          frontDistance != -1 &&
+          frontDistance > FRONT_SAFE
+      ) {
 
         moveForward();
       }
@@ -218,22 +216,38 @@ void executeCommand() {
 
         stopMotors();
 
-        Serial.println("BLOCKED_FRONT");
+        static bool frontBlocked = false;
+
+        if(!frontBlocked) {
+
+            Serial.println("BLOCKED_FRONT");
+
+            frontBlocked = true;
+        }
       }
 
       break;
 
     case 'B':
 
-      if(rearDistance > REAR_SAFE) {
-
+      if(
+        rearDistance !=-1 &&
+        rearDistance > REAR_SAFE
+      ) {
         moveBackward();
       }
       else {
 
         stopMotors();
 
-        Serial.println("BLOCKED_REAR");
+        static bool rearBlocked = false;
+
+        if(!rearBlocked) {
+
+            Serial.println("BLOCKED_REAR");
+
+            rearBlocked = true;
+        }
       }
 
       break;
@@ -276,7 +290,7 @@ long getDistance(int trigPin, int echoPin) {
 
   // Timeout protection
   if(duration == 0) {
-    return 999;
+    return -1;
   }
 
   long distance = duration * 0.034 / 2;

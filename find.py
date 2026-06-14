@@ -19,7 +19,7 @@ YOLO_SIZE = 320
 
 YOLO_CONF = 0.45
 
-DEBUG_VIEW = False
+DEBUG_VIEW = True
 
 # -----------------------------
 # SEARCH CONFIG
@@ -110,6 +110,19 @@ def interrupted():
 def detect_target(target_name):
 
     ret, frame = cap.read()
+
+    # =================================
+    # ALWAYS SHOW CAMERA
+    # =================================
+
+    if DEBUG_VIEW:
+
+        cv2.imshow(
+            "Robot Vision",
+            frame
+        )
+
+        cv2.waitKey(1)
 
     if not ret:
         return None

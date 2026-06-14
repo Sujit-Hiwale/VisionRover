@@ -1,13 +1,16 @@
 import subprocess
 import threading
 import queue
+import asyncio
+import io
 
-import smallFaces
+import edge_tts
+import pygame
 
 # ==============================
 # SPEECH QUEUE
 # ==============================
-
+smallFacesModule = None
 speech_queue = queue.Queue()
 
 is_speaking = False
@@ -15,7 +18,7 @@ is_speaking = False
 speech_lock = threading.Lock()
 
 # ==============================
-# SPEAK WORKER
+# SPEECH WORKER
 # ==============================
 
 def speech_worker():
@@ -32,34 +35,83 @@ def speech_worker():
         with speech_lock:
 
             is_speaking = True
+
             print(f"🗣 Speaking: {text}")
+
+            global smallFacesModule
 
             try:
 
-                # Save current face
+                if smallFacesModule is None:
+
+                    import smallFaces
+
+                    smallFacesModule = smallFaces
+
                 previous_mode = (
-                    smallFaces.current_mode
+                    smallFacesModule.current_mode
                 )
 
-                # Talking face
-                smallFaces.set_mode(
-                    "talking"
+                # ==========================
+                # TALKING FACE
+                # ==========================
+
+                try:
+
+                    smallFacesModule.set_mode(
+                        "talking"
+                    )
+
+                except:
+                    pass
+
+                # ==========================
+                # SPEAK
+                # ==========================
+
+                async def play_voice(text):
+
+                    communicate = edge_tts.Communicate(
+                        text,
+                        "en-US-AvaNeural"
+                    )
+
+                    audio_data = b""
+
+                    async for chunk in communicate.stream():
+
+                        if chunk["type"] == "audio":
+
+                            audio_data += chunk["data"]
+
+                    pygame.mixer.init()
+
+                    pygame.mixer.music.load(
+                        io.BytesIO(audio_data)
+                    )
+
+                    pygame.mixer.music.play()
+
+                    while pygame.mixer.music.get_busy():
+
+                        await asyncio.sleep(0.1)
+
+                asyncio.run(
+                    play_voice(text)
                 )
 
-                process = subprocess.Popen([
-                    'espeak-ng',
-                    '-s', '125',
-                    '-p', '70',
-                    '-a', '180',
-                    text
-                ])
+                # ==========================
+                # RESTORE FACE
+                # ==========================
 
-                process.wait()
+                try:
 
-                # Restore face
-                smallFaces.set_mode(
-                    previous_mode
-                )
+                    smallFacesModule.set_mode(
+                        previous_mode
+                    )
+
+                except:
+                    pass
 
             except Exception as e:
 
@@ -70,16 +122,19 @@ def speech_worker():
             is_speaking = False
 
 # ==============================
-# START WORKER THREAD
+# START THREAD
 # ==============================
 
 threading.Thread(
+
     target=speech_worker,
+
     daemon=True
+
 ).start()
 
 # ==============================
-# PUBLIC SPEAK FUNCTION
+# PUBLIC SPEAK
 # ==============================
 
 def speak(text):

@@ -1,0 +1,4 @@
+{
+  "BASE_NODE": "/dev/ttyUSB0",
+  "SERVO_NODE": "/dev/ttyACM0"
+}

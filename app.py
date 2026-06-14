@@ -1,20 +1,21 @@
 from flask import Flask, request, jsonify
 from datetime import datetime
-
 import threading
 import time
+import re
 
-# =====================================
-# ROBOT MODULES
-# =====================================
+from vision.face_greeting import face_monitor
+from vision.camera import (
+    get_latest_frame,
+    start_camera
+)
 
 import motor
 import servo
 import internet
-import find
 import smallFaces
 import robot_state
-import speak
+from personality import handle_personality
 
 # =====================================
 # FLASK
@@ -38,6 +39,9 @@ logs = []
 
 MAX_LOGS = 200
 
+# =====================================
+# LOGGING
+# =====================================
 
 def add_log(message):
 
@@ -55,9 +59,8 @@ def add_log(message):
     print(log_entry)
 
 # =====================================
-# SAFE TASK SETTERS
+# TASK HELPERS
 # =====================================
-
 
 def set_task(task_name):
 
@@ -67,7 +70,6 @@ def set_task(task_name):
 
         current_task = task_name
 
-
 def clear_task():
 
     global current_task
@@ -75,7 +77,6 @@ def clear_task():
     with task_lock:
 
         current_task = None
-
 
 def get_task():
 
@@ -87,30 +88,34 @@ def get_task():
 # EMERGENCY STOP
 # =====================================
 
-
 def emergency_stop():
 
-    add_log("🛑 Emergency stop triggered")
+    add_log("🛑 Emergency stop")
 
     robot_state.interrupt_requested = True
 
-    motor.stop()
+    try:
+        motor.stop()
+    except:
+        pass
 
-    servo.move_neck(
-        servo.NECK_CENTER
-    )
+    try:
+        servo.move_neck(
+            servo.NECK_CENTER
+        )
+    except:
+        pass
 
-    servo.left_rotate_center()
-    servo.right_rotate_center()
-
-    smallFaces.neutral()
+    try:
+        smallFaces.neutral()
+    except:
+        pass
 
     clear_task()
 
 # =====================================
-# DANCE MODE
+# DANCE
 # =====================================
-
 
 def dance():
 
@@ -118,63 +123,45 @@ def dance():
 
         set_task("dance")
 
-        add_log("🕺 Dance mode started")
+        add_log("🕺 Dance started")
 
-        smallFaces.happy()
-
-        servo.left_release()
-        servo.right_release()
+        try:
+            smallFaces.happy()
+        except:
+            pass
 
         for _ in range(3):
 
             if robot_state.interrupt_requested:
-
-                add_log(
-                    "🛑 Dance interrupted"
-                )
-
                 break
 
-            servo.left_rotate_up()
-            servo.right_rotate_up()
+            try:
+                servo.move_hands()
+            except:
+                pass
 
-            servo.move_neck(60)
+            try:
+                motor.forward()
+                time.sleep(0.5)
 
-            motor.forward(0.6)
+                motor.left()
+                time.sleep(0.5)
 
-            servo.left_rotate_up()
-            servo.right_rotate_down()
+                motor.right()
+                time.sleep(0.5)
 
-            servo.move_neck(120)
+                motor.backward()
+                time.sleep(0.5)
 
-            motor.left(0.3)
+                motor.stop()
 
-            time.sleep(0.3)
+            except:
+                pass
 
-            servo.left_rotate_down()
-            servo.right_rotate_up()
-
-            servo.move_neck(40)
-
-            motor.right(0.3)
-
-            servo.left_rotate_down()
-            servo.right_rotate_down()
-
-            servo.move_neck(140)
-
-            motor.backward(0.6)
-
-        servo.left_rotate_center()
-        servo.right_rotate_center()
-
-        servo.move_neck(
-            servo.NECK_CENTER
-        )
-
-        motor.stop()
-
-        smallFaces.neutral()
+        try:
+            smallFaces.neutral()
+        except:
+            pass
 
         add_log("✅ Dance completed")
 
@@ -194,7 +181,15 @@ def dance():
 # SIMPLE COMMANDS
 # =====================================
 
+# =====================================
+# SIMPLE COMMANDS
+# =====================================
+
 SIMPLE_COMMANDS = {
+
+    # ==============================
+    # MOVEMENT
+    # ==============================
 
     "forward": motor.forward,
     "backward": motor.backward,
@@ -202,44 +197,52 @@ SIMPLE_COMMANDS = {
     "right": motor.right,
     "stop": emergency_stop,
 
+    # ==============================
+    # HAND DEMO
+    # ==============================
+
+    "move hands": servo.move_hands,
+
+    # ==============================
+    # LEFT GRIP
+    # ==============================
+
     "left grip": servo.left_grip,
     "left release": servo.left_release,
 
-    "left extend": servo.left_extend,
-    "left retract": servo.left_retract,
-
-    "left arm up": servo.left_rotate_up,
-    "left arm down": servo.left_rotate_down,
-    "left arm center": servo.left_rotate_center,
+    # ==============================
+    # RIGHT GRIP
+    # ==============================
 
     "right grip": servo.right_grip,
     "right release": servo.right_release,
 
+    # ==============================
+    # LEFT EXTEND / RETRACT
+    # ==============================
+
+    "left extend": servo.left_extend,
+    "left retract": servo.left_retract,
+
+    # ==============================
+    # RIGHT EXTEND / RETRACT
+    # ==============================
+
     "right extend": servo.right_extend,
     "right retract": servo.right_retract,
 
-    "right arm up": servo.right_rotate_up,
-    "right arm down": servo.right_rotate_down,
-    "right arm center": servo.right_rotate_center,
+    # ==============================
+    # LEFT ROTATION
+    # ==============================
 
-    "both extend": servo.both_extend,
-    "both retract": servo.both_retract,
-
-    "both grip": lambda: (
-        servo.left_grip(),
-        servo.right_grip()
-    ),
-
-    "both release": lambda: (
-        servo.left_release(),
-        servo.right_release()
-    ),
+    "left up": servo.left_rotate_up,
+    "left center": servo.left_rotate_center,
+    "left down": servo.left_rotate_down,
 }
 
 # =====================================
-# BACKGROUND TASK WRAPPER
+# BACKGROUND TASK
 # =====================================
-
 
 def run_background_task(
     task_name,
@@ -277,7 +280,7 @@ def run_background_task(
     thread.start()
 
 # =====================================
-# HOME ROUTE
+# HOME
 # =====================================
 
 @app.route('/')
@@ -289,21 +292,22 @@ def home():
     })
 
 # =====================================
-# STATUS ROUTE
+# STATUS
 # =====================================
 
-@app.route('/status', methods=['GET'])
+@app.route('/status')
 def status():
 
     return jsonify({
+
         "task": get_task(),
-        "interrupted": (
-            robot_state.interrupt_requested
-        )
+
+        "interrupted":
+        robot_state.interrupt_requested
     })
 
 # =====================================
-# COMMAND ROUTE
+# COMMAND
 # =====================================
 
 @app.route('/command', methods=['POST'])
@@ -317,7 +321,7 @@ def command():
 
             return jsonify({
                 "status": "error",
-                "message": "No JSON received"
+                "message": "No JSON"
             }), 400
 
         cmd = (
@@ -328,71 +332,94 @@ def command():
             .lower()
             .strip()
         )
+        
+        # =================================
+        # REMOVE WAKE WORD
+        # =================================
 
-        if not cmd:
+        match = re.search(r'\bmax\b', cmd, re.IGNORECASE)
 
+        if not match:
             return jsonify({
-                "status": "error",
-                "message": "Empty command"
+                "status": "ignored",
+                "message": "Wake word not detected"
             })
 
-        add_log(f"📥 Command: {cmd}")
+        cmd = cmd[match.end():].strip()
 
-        # =====================================
-        # GLOBAL STOP
-        # =====================================
+        if not cmd:
+            return jsonify({
+                "status": "ignored",
+                "message": "No command after wake word"
+            })
+
+        add_log(f"📥 {cmd}")
+
+        # =================================
+        # STOP
+        # =================================
 
         if cmd in [
+
             "ok",
             "okay",
             "stop",
-            "stop everything",
             "cancel",
             "emergency stop",
-            "shutdown movement"
+            "stop everything"
+
         ]:
 
             emergency_stop()
 
             return jsonify({
-                "status": "stopped",
-                "message": "Robot stopped"
+                "status": "stopped"
             })
 
-        # =====================================
+        # =================================
         # BUSY CHECK
-        # =====================================
+        # =================================
 
         busy_task = get_task()
 
         if busy_task is not None:
 
             return jsonify({
+
                 "status": "busy",
-                "current_task": busy_task
+
+                "task": busy_task
             })
 
-        # =====================================
+        # =================================
         # SIMPLE COMMANDS
-        # =====================================
+        # =================================
 
         if cmd in SIMPLE_COMMANDS:
 
-            SIMPLE_COMMANDS[cmd]()
+            try:
 
-            add_log(
-                f"✅ Executed: {cmd}"
-            )
+                SIMPLE_COMMANDS[cmd]()
+
+            except Exception as e:
+
+                add_log(
+                    f"⚠️ Command issue: {e}"
+                )
 
             return jsonify({
+
                 "status": "executed",
+
                 "command": cmd
             })
 
-        # =====================================
-        # DANCE
-        # =====================================
+        elif handle_personality(cmd):
 
+            return jsonify({
+                "status": "success"
+            })
+        
         elif cmd == "dance":
 
             run_background_task(
@@ -401,69 +428,133 @@ def command():
             )
 
             return jsonify({
-                "status": "started",
-                "task": "dance"
+                "status": "started"
             })
 
-        # =====================================
-        # FIND / SEARCH
-        # =====================================
+        elif any(word in cmd for word in ["find", "search for", "look for"]):
 
-        elif any(
-            word in cmd
-            for word in [
-                "find",
-                "look for",
-                "search for"
-            ]
-        ):
+            target = cmd
 
-            target = (
-                cmd.replace(
-                    "look for",
-                    ""
-                )
-                .replace(
-                    "search for",
-                    ""
-                )
-                .replace(
-                    "find",
-                    ""
-                )
-                .strip()
-            )
+            for w in ["find", "search for", "look for"]:
 
-            if not target:
+                target = target.replace(w, "")
 
-                return jsonify({
-                    "status": "error",
-                    "message": "No target specified"
-                })
+            target = target.strip().lower()
 
-            add_log(
-                f"🔍 Finding: {target}"
-            )
+            from vision.objDet import find_object
+            from vision.camera import get_latest_frame
 
+            def object_search_task(target):
+
+                add_log(f"🔍 Searching for: {target}")
+
+                SEARCH_SERVO = 0   # PCA9685 channel
+
+                while not robot_state.interrupt_requested:
+
+                    # =====================================
+                    # SCAN 0 -> 180
+                    # =====================================
+
+                    for angle in range(0, 181, 15):
+
+                        if robot_state.interrupt_requested:
+                            return
+
+                        try:
+
+                            servo.move_neck(angle)
+
+                        except Exception as e:
+
+                            add_log(
+                                f"Servo error: {e}"
+                            )
+
+                        add_log(
+                            f"Scanning angle: {angle}"
+                        )
+
+                        time.sleep(0.4)
+
+                        frame = get_latest_frame()
+
+                        if frame is None:
+                            continue
+
+                        detection = find_object(
+                            frame,
+                            target
+                        )
+
+                        # =====================================
+                        # FOUND
+                        # =====================================
+
+                        if detection:
+
+                            add_log(
+                                f"✅ Found {target}"
+                            )
+
+                            add_log(
+                                f"Confidence: {detection['confidence']}"
+                            )
+
+                            try:
+                                motor.stop()
+                            except:
+                                pass
+
+                            return
+
+                    # =====================================
+                    # OBJECT NOT FOUND
+                    # TURN LEFT
+                    # =====================================
+
+                    add_log(
+                        "↩️ Object not found, rotating robot"
+                    )
+
+                    try:
+
+                        motor.left()
+
+                        time.sleep(1)
+
+                        motor.stop()
+
+                    except Exception as e:
+
+                        add_log(
+                            f"Motor error: {e}"
+                        )
+
+                    time.sleep(0.5)
+
+                add_log("🛑 Search interrupted")
             run_background_task(
-                f"find:{target}",
-                find.find,
+                "vision_object_search",
+                object_search_task,
                 target
             )
 
             return jsonify({
                 "status": "started",
-                "task": "find",
                 "target": target
             })
 
-        # =====================================
+        # =================================
         # INTERNET SEARCH
-        # =====================================
+        # =================================
 
         elif any(
+
             cmd.startswith(word)
+
             for word in [
+
                 "what",
                 "who",
                 "where",
@@ -475,51 +566,49 @@ def command():
             ]
         ):
 
-            add_log(
-                f"🌐 Internet search: {cmd}"
-            )
-
             run_background_task(
+
                 "internet_search",
+
                 internet.assistant_search,
+
                 cmd,
+
                 True
             )
 
             return jsonify({
-                "status": "started",
-                "task": "internet_search"
+                "status": "started"
             })
 
-        # =====================================
+        # =================================
         # UNKNOWN
-        # =====================================
+        # =================================
 
-        else:
+        return jsonify({
 
-            add_log(
-                f"❌ Unknown command: {cmd}"
-            )
+            "status": "unknown",
 
-            return jsonify({
-                "status": "unknown",
-                "command": cmd
-            })
+            "command": cmd
+        })
 
     except Exception as e:
 
-        add_log(f"❌ ERROR: {str(e)}")
+        add_log(f"❌ ERROR: {e}")
 
         return jsonify({
+
             "status": "error",
+
             "message": str(e)
+
         }), 500
 
 # =====================================
-# LOG ROUTE
+# LOGS
 # =====================================
 
-@app.route('/logs', methods=['GET'])
+@app.route('/logs')
 def get_logs():
 
     return jsonify({
@@ -532,25 +621,57 @@ def get_logs():
 
 if __name__ == '__main__':
 
-    print(
-        "🔥 Starting Robot Server..."
-    )
+    print("🔥 Starting Robot Server")
 
     add_log(
         "🔥 Robot server booting"
     )
 
-    servo.initialize_robot()
+    try:
 
-    smallFaces.neutral()
+        servo.initialize_robot()
+
+    except Exception as e:
+
+        add_log(
+            f"⚠️ Servo init skipped: {e}"
+        )
+
+    try:
+
+        smallFaces.neutral()
+
+    except Exception as e:
+
+        add_log(
+            f"⚠️ LCD init skipped: {e}"
+        )
 
     add_log(
-        "✅ Robot initialized"
+        "✅ Robot server running"
     )
 
+    start_camera()
+    
+    def vision_loop():
+        face_monitor(get_latest_frame)
+
+    vision_thread = threading.Thread(
+        target=vision_loop,
+        daemon=True
+    )
+
+    vision_thread.start()
+
+    print("👁 Vision system started")
+
     app.run(
+
         host='0.0.0.0',
+
         port=5000,
+
         debug=False,
+
         threaded=True
     )

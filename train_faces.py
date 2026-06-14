@@ -53,7 +53,7 @@ print(f"\n📁 Saving images to: {person_path}")
 # -----------------------------
 # CAMERA SETUP
 # -----------------------------
-cap = cv2.VideoCapture(0)
+cap = cv2.VideoCapture(2)
 
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)

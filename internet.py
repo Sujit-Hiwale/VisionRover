@@ -1,17 +1,20 @@
 from ddgs import DDGS
+
 import time
 
 import smallFaces
 import speak
 
-# ---------------------------------
+# =====================================
 # SUMMARIZER
-# ---------------------------------
+# =====================================
 
-def summarize(text, max_sentences=2):
+def summarize(
+    text,
+    max_sentences=2
+):
 
     if not text:
-
         return "No summary available."
 
     sentences = [
@@ -32,9 +35,9 @@ def summarize(text, max_sentences=2):
 
     return summary
 
-# ---------------------------------
-# ASSISTANT SEARCH
-# ---------------------------------
+# =====================================
+# SEARCH
+# =====================================
 
 def assistant_search(
     query,
@@ -47,17 +50,22 @@ def assistant_search(
             f"🌐 Searching: {query}"
         )
 
-        # =====================================
-        # SEARCHING FACE
-        # =====================================
+        # =================================
+        # FACE
+        # =================================
 
-        smallFaces.searching()
+        try:
+
+            smallFaces.searching()
+
+        except:
+            pass
 
         time.sleep(0.3)
 
-        # =====================================
-        # SEARCH WEB
-        # =====================================
+        # =================================
+        # SEARCH
+        # =================================
 
         results = []
 
@@ -66,39 +74,42 @@ def assistant_search(
             results = list(
 
                 ddgs.text(
+
                     query,
+
                     max_results=3
                 )
             )
 
         print(
-            f"📦 Results Found: "
-            f"{len(results)}"
+            f"📦 Results: {len(results)}"
         )
 
-        # =====================================
+        # =================================
         # NO RESULTS
-        # =====================================
+        # =================================
 
         if not results:
 
-            print(
-                "❌ No results found"
-            )
-
-            smallFaces.not_found()
+            try:
+                smallFaces.not_found()
+            except:
+                pass
 
             if voice:
 
-                speak.speak(
-                    "No results found"
-                )
+                try:
+                    speak.speak(
+                        "No results found"
+                    )
+                except:
+                    pass
 
             return "No results found."
 
-        # =====================================
-        # FIND BEST RESULT
-        # =====================================
+        # =================================
+        # BEST RESULT
+        # =================================
 
         top = None
 
@@ -129,49 +140,52 @@ def assistant_search(
             ""
         )
 
-        print(
-            f"📰 Title: {title}"
-        )
-
-        print(
-            f"📄 Body: {body}"
-        )
-
-        # =====================================
-        # SUMMARIZE
-        # =====================================
-
         summary = summarize(body)
 
         answer = (
+
             f"{title}\n\n"
+
             f"{summary}"
         )
 
-        # =====================================
+        # =================================
         # FOUND FACE
-        # =====================================
+        # =================================
 
-        smallFaces.found()
+        try:
 
-        # =====================================
+            smallFaces.found()
+
+        except:
+            pass
+
+        # =================================
         # SPEAK
-        # =====================================
+        # =================================
 
         if voice:
 
-            print(
-                "🗣️ Speaking result"
-            )
+            try:
 
-            speak.speak(summary)
+                speak.speak(summary)
+
+            except Exception as e:
+
+                print(
+                    f"Speak failed: {e}"
+                )
 
         else:
 
-            # Return to neutral only if not speaking
-            time.sleep(1)
+            try:
 
-            smallFaces.neutral()
+                time.sleep(1)
+
+                smallFaces.neutral()
+
+            except:
+                pass
 
         return answer
 
@@ -181,11 +195,12 @@ def assistant_search(
             f"❌ Search Error: {e}"
         )
 
-        # =====================================
-        # ERROR FACE
-        # =====================================
+        try:
 
-        smallFaces.angry()
+            smallFaces.angry()
+
+        except:
+            pass
 
         if voice:
 
@@ -195,17 +210,7 @@ def assistant_search(
                     "Internet search failed"
                 )
 
-            except Exception as speak_error:
-
-                print(
-                    f"Speak error: "
-                    f"{speak_error}"
-                )
-
-        else:
-
-            time.sleep(1)
-
-            smallFaces.neutral()
+            except:
+                pass
 
         return f"Error: {e}"

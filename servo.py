@@ -1,5 +1,5 @@
 import upperNode
-
+import time
 # =====================================
 # NECK
 # =====================================
@@ -151,3 +151,57 @@ def both_retract():
     left_retract()
 
     right_retract()
+
+def move_hands():
+
+    try:
+
+        # =================================
+        # LEFT HAND SEQUENCE
+        # =================================
+
+        left_rotate_up()
+        time.sleep(0.4)
+
+        left_extend()
+        time.sleep(0.4)
+
+        left_grip()
+        time.sleep(0.4)
+
+        left_release()
+        time.sleep(0.4)
+
+        left_retract()
+        time.sleep(0.4)
+
+        left_rotate_center()
+        time.sleep(0.4)
+
+        # =================================
+        # RIGHT HAND SEQUENCE
+        # =================================
+
+        right_rotate_up()
+        time.sleep(0.4)
+
+        right_extend()
+        time.sleep(0.4)
+
+        right_grip()
+        time.sleep(0.4)
+
+        right_release()
+        time.sleep(0.4)
+
+        right_retract()
+        time.sleep(0.4)
+
+        right_rotate_center()
+        time.sleep(0.4)
+
+    except Exception as e:
+
+        print(
+            f"Hand movement failed: {e}"
+        )

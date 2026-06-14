@@ -2,8 +2,8 @@ import serial
 import serial.tools.list_ports
 import time
 import threading
-
-from speak import speak
+import json
+import os
 
 # ==============================
 # CONFIG
@@ -15,71 +15,169 @@ esp = None
 
 servo_node_connected = False
 
-last_spoken_state = None
+servo_port = None
 
+serial_lock = threading.Lock()
+
+BASE_DIR = os.path.dirname(
+    os.path.abspath(__file__)
+)
+
+PORTS_FILE = os.path.join(
+    BASE_DIR,
+    "node_ports.json"
+)
+
+def load_ports():
+
+    if not os.path.exists(PORTS_FILE):
+        return {}
+
+    try:
+
+        with open(PORTS_FILE, "r") as f:
+            return json.load(f)
+
+    except:
+        return {}
+
+def save_ports(data):
+
+    with open(PORTS_FILE, "w") as f:
+
+        json.dump(
+            data,
+            f,
+            indent=2
+        )
+
+def try_port(port_name, expected_id):
+
+    try:
+
+        print(
+            f"🔍 Checking {port_name}"
+        )
+
+        ser = serial.Serial(
+            port_name,
+            BAUD,
+            timeout=2
+        )
+
+        # ESP32 reboot delay
+        time.sleep(2)
+
+        ser.reset_input_buffer()
+
+        ser.write(
+            b'WHO_ARE_YOU\n'
+        )
+
+        time.sleep(0.5)
+
+        response = (
+            ser.readline()
+            .decode(errors='ignore')
+            .strip()
+        )
+
+        print(
+            f"📨 Response: {response}"
+        )
+
+        if response == expected_id:
+
+            print(
+                f"✅ {expected_id} found "
+                f"on {port_name}"
+            )
+
+            return ser
+        print(f"⚠️ Wrong device on {port_name}: {response}")
+        ser.close()
+
+    except Exception as e:
+
+        print(
+            f"❌ Failed on "
+            f"{port_name}: {e}"
+        )
+
+    return None
+       
 # ==============================
-# SPEAK STATE CHANGES
-# ==============================
-
-def speak_state(state):
-
-    global last_spoken_state
-
-    if last_spoken_state == state:
-        return
-
-    last_spoken_state = state
-
-    speak(state)
-
-# ==============================
-# FIND SERVO NODE
+# FIND NODE ONLY ONCE
 # ==============================
 
 def find_servo_node():
 
-    ports = serial.tools.list_ports.comports()
+    ports_cache = load_ports()
+
+    cached_port = ports_cache.get(
+        "SERVO_NODE"
+    )
+
+    # ==========================
+    # TRY CACHED PORT FIRST
+    # ==========================
+
+    if cached_port:
+
+        print(
+            f"🔄 Trying cached port "
+            f"{cached_port}"
+        )
+
+        ser = try_port(
+            cached_port,
+            "SERVO_NODE"
+        )
+
+        if ser:
+            return ser
+
+        print(
+            "⚠️ Cached port failed"
+        )
+
+    # ==========================
+    # FALLBACK SCAN
+    # ==========================
+
+    print("🔍 Scanning all ports...")
+
+    ports = [
+
+        port
+
+        for port in serial.tools
+        .list_ports
+        .comports()
+
+        if port.device.startswith(
+            "/dev/ttyACM"
+        )
+    ]
 
     for port in ports:
 
-        try:
+        ser = try_port(
+            port.device,
+            "SERVO_NODE"
+        )
 
-            print(f"🔍 Checking {port.device}")
+        if ser:
 
-            ser = serial.Serial(
-                port.device,
-                BAUD,
-                timeout=2
+            ports_cache[
+                "SERVO_NODE"
+            ] = port.device
+
+            save_ports(
+                ports_cache
             )
 
-            time.sleep(2)
-
-            ser.reset_input_buffer()
-
-            # Ask identity
-            ser.write(b'WHO_ARE_YOU\n')
-
-            time.sleep(0.5)
-
-            response = (
-                ser.readline()
-                .decode()
-                .strip()
-            )
-
-            print(f"📨 Response: {response}")
-
-            if response == "SERVO_NODE":
-
-                print(f"✅ SERVO_NODE found on {port.device}")
-
-                return ser
-
-            ser.close()
-
-        except Exception as e:
-
-            print(f"❌ Failed: {e}")
+            return ser
 
     return None
 
@@ -91,10 +189,32 @@ def connect_servo_node():
 
     global esp
     global servo_node_connected
+    global servo_port
 
     try:
 
-        esp = find_servo_node()
+        # ==================================
+        # USE STORED PORT
+        # ==================================
+
+        if servo_port is not None:
+
+            print(
+                f"🔄 Reconnecting to "
+                f"{servo_port}"
+            )
+
+            esp = serial.Serial(
+                servo_port,
+                BAUD,
+                timeout=2
+            )
+
+            time.sleep(2)
+
+        else:
+
+            esp = find_servo_node()
 
         if esp is None:
 
@@ -104,16 +224,17 @@ def connect_servo_node():
 
         servo_node_connected = True
 
-        print("✅ Servo node connected")
-
-        speak_state("Arms connected")
-        speak_state("LCD connected")
+        print(
+            "✅ Servo node connected"
+        )
 
         return True
 
     except Exception as e:
 
-        print(f"❌ Servo node failed: {e}")
+        print(
+            f"❌ Servo node failed: {e}"
+        )
 
         try:
             esp.close()
@@ -121,14 +242,6 @@ def connect_servo_node():
             pass
 
         esp = None
-
-        if servo_node_connected:
-
-            speak_state("Servo node disconnected")
-
-        else:
-
-            speak_state("Servo node not connected")
 
         servo_node_connected = False
 
@@ -138,7 +251,7 @@ def connect_servo_node():
 connect_servo_node()
 
 # ==============================
-# MONITOR THREAD
+# MONITOR
 # ==============================
 
 def monitor_connection():
@@ -148,78 +261,107 @@ def monitor_connection():
 
     while True:
 
-        if esp is None or not esp.is_open:
+        try:
 
-            connect_servo_node()
+            if esp is None or not esp.is_open:
 
-        else:
+                connect_servo_node()
 
-            try:
+            else:
 
-                esp.write(b'PING\n')
+                with serial_lock:
 
-                time.sleep(0.2)
+                    esp.reset_input_buffer()
 
-                response = (
-                    esp.readline()
-                    .decode()
-                    .strip()
-                )
+                    esp.write(b'PING\n')
 
-                if response != "PONG":
+                    time.sleep(0.2)
 
-                    raise Exception(
-                        "Heartbeat failed"
+                    response = (
+                        esp.readline()
+                        .decode(errors='ignore')
+                        .strip()
                     )
 
-            except Exception as e:
+                # Ignore occasional blanks
+                if response not in [
+                    "PONG",
+                    ""
+                ]:
 
-                print(f"❌ Servo node disconnected: {e}")
+                    raise Exception(
+                        f"Bad heartbeat: "
+                        f"{response}"
+                    )
 
-                try:
-                    esp.close()
-                except:
-                    pass
+        except Exception as e:
 
-                esp = None
+            print(
+                f"❌ Servo disconnected: {e}"
+            )
 
-                servo_node_connected = False
+            try:
+                esp.close()
+            except:
+                pass
 
-                speak_state(
-                    "Servo node disconnected"
-                )
+            esp = None
+
+            servo_node_connected = False
 
         time.sleep(5)
 
 threading.Thread(
+
     target=monitor_connection,
+
     daemon=True
+
 ).start()
 
 # ==============================
-# SEND FUNCTION
+# SEND
 # ==============================
 
 def send(cmd):
 
     global esp
 
-    if esp is None or not esp.is_open:
+    for attempt in range(3):
 
-        print("🔄 Reconnecting SERVO_NODE")
+        try:
 
-        if not connect_servo_node():
+            if esp is None or not esp.is_open:
 
-            return False
+                if not connect_servo_node():
 
-    try:
+                    continue
 
-        esp.write(f"{cmd}\n".encode())
+            with serial_lock:
 
-        return True
+                esp.write(
+                    f"{cmd}\n".encode()
+                )
 
-    except Exception as e:
+            return True
 
-        print(f"❌ Send failed: {e}")
+        except Exception as e:
 
-        return False
+            print(
+                f"❌ Send failed: {e}"
+            )
+
+            try:
+                esp.close()
+            except:
+                pass
+
+            esp = None
+
+            time.sleep(1)
+
+    print(
+        f"❌ Skipping: {cmd}"
+    )
+
+    return False

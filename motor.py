@@ -1,40 +1,175 @@
 import serial
 import time
 import threading
-
-from speak import speak
+import serial.tools.list_ports
+import json
+import os
 
 # ==============================
 # CONFIG
 # ==============================
 
-PORT = '/dev/serial0'
 BAUD = 115200
 
 esp = None
 
 base_connected = False
 
-last_spoken_state = None
+serial_lock = threading.Lock()
+
+BASE_DIR = os.path.dirname(
+    os.path.abspath(__file__)
+)
+
+PORTS_FILE = os.path.join(
+    BASE_DIR,
+    "node_ports.json"
+)
+
+def load_ports():
+
+    if not os.path.exists(PORTS_FILE):
+        return {}
+
+    try:
+
+        with open(PORTS_FILE, "r") as f:
+            return json.load(f)
+
+    except:
+        return {}
+
+def save_ports(data):
+
+    with open(PORTS_FILE, "w") as f:
+
+        json.dump(
+            data,
+            f,
+            indent=2
+        )
+
+def try_port(port_name, expected_id):
+
+    try:
+
+        print(
+            f"🔍 Checking {port_name}"
+        )
+
+        ser = serial.Serial(
+            port_name,
+            BAUD,
+            timeout=2
+        )
+
+        # ESP32 reboot delay
+        time.sleep(2)
+
+        ser.reset_input_buffer()
+
+        ser.write(
+            b'WHO_ARE_YOU\n'
+        )
+
+        time.sleep(0.5)
+
+        response = (
+            ser.readline()
+            .decode(errors='ignore')
+            .strip()
+        )
+
+        print(
+            f"📨 Response: {response}"
+        )
+
+        if response == expected_id:
+
+            print(
+                f"✅ {expected_id} found "
+                f"on {port_name}"
+            )
+
+            return ser
+        print(f"⚠️ Wrong device on {port_name}: {response}")
+        ser.close()
+
+    except Exception as e:
+
+        print(
+            f"❌ Failed on "
+            f"{port_name}: {e}"
+        )
+
+    return None
 
 # ==============================
-# SPEAK STATE CHANGES
+# FIND BASE NODE
 # ==============================
 
-def speak_state(state):
+def find_base_node():
 
-    global last_spoken_state
+    ports_cache = load_ports()
 
-    if last_spoken_state == state:
-        return
+    cached_port = ports_cache.get(
+        "BASE_NODE"
+    )
 
-    last_spoken_state = state
+    if cached_port:
 
-    speak(state)
+        print(
+            f"🔄 Trying cached port "
+            f"{cached_port}"
+        )
 
-# ==============================
-# CONNECT FUNCTION
-# ==============================
+        ser = try_port(
+            cached_port,
+            "BASE_NODE"
+        )
+
+        if ser:
+            return ser
+
+        print(
+            "⚠️ Cached port failed"
+        )
+    
+    print("🔍 Scanning all ports...")
+
+    ports = [
+
+        port
+
+        for port in serial.tools
+        .list_ports
+        .comports()
+
+        if port.device.startswith(
+            "/dev/ttyUSB"
+        )
+    ]
+
+    for port in ports:
+
+        ser = try_port(
+            port.device,
+            "BASE_NODE"
+        )
+
+        if ser:
+
+            ports_cache[
+                "BASE_NODE"
+            ] = port.device
+
+            save_ports(
+                ports_cache
+            )
+
+            return ser
+
+    return None
 
 def connect_esp():
 
@@ -43,52 +178,22 @@ def connect_esp():
 
     try:
 
-        print(f"🔍 Connecting to base on {PORT}")
-
-        esp = serial.Serial(
-            PORT,
-            BAUD,
-            timeout=2
+        print(
+            "🔍 Searching "
+            "for BASE_NODE"
         )
 
-        time.sleep(2)
+        esp = find_base_node()
 
-        # Clear garbage
-        esp.reset_input_buffer()
+        if esp is None:
 
-        # Ask identity
-        esp.write(b'WHO_ARE_YOU\n')
-
-        time.sleep(0.5)
-
-        response = (
-            esp.readline()
-            .decode()
-            .strip()
-        )
-
-        print(f"📨 Response: {response}")
-
-        # Verify node
-        if response != "BASE_NODE":
-
-            print("❌ Wrong device connected")
-
-            esp.close()
-
-            esp = None
-
-            base_connected = False
-
-            speak_state("Base not connected")
-
-            return False
+            raise Exception(
+                "BASE_NODE not found"
+            )
 
         print("✅ Base connected")
 
         base_connected = True
-
-        speak_state("Base connected")
 
         return True
 
@@ -102,14 +207,6 @@ def connect_esp():
             pass
 
         esp = None
-
-        if base_connected:
-
-            speak_state("Base disconnected")
-
-        else:
-
-            speak_state("Base not connected")
 
         base_connected = False
 
@@ -141,20 +238,26 @@ def monitor_connection():
             try:
 
                 # Heartbeat
-                esp.write(b'PING\n')
+                with serial_lock:
 
-                time.sleep(0.2)
+                    esp.write(b'PING\n')
 
-                response = (
-                    esp.readline()
-                    .decode()
-                    .strip()
-                )
+                    time.sleep(0.2)
+
+                    response = (
+                        esp.readline()
+                        .decode(errors='ignore')
+                        .strip()
+                    )
 
                 if response != "PONG":
 
+                    esp.reset_input_buffer()
+                    esp.reset_output_buffer()
+
                     raise Exception(
-                        "Heartbeat failed"
+                        f"Heartbeat failed: "
+                        f"{response}"
                     )
 
             except Exception as e:
@@ -169,8 +272,6 @@ def monitor_connection():
                 esp = None
 
                 base_connected = False
-
-                speak_state("Base disconnected")
 
         time.sleep(5)
 
@@ -187,42 +288,47 @@ threading.Thread(
 def send(cmd):
 
     global esp
-    global base_connected
 
-    # Auto reconnect
-    if esp is None or not esp.is_open:
-
-        print("🔄 Trying to reconnect base...")
-
-        if not connect_esp():
-
-            print("❌ Cannot send command")
-
-            return False
-
-    try:
-
-        esp.write(f"{cmd}\n".encode())
-
-        return True
-
-    except Exception as e:
-
-        print(f"❌ Send failed: {e}")
+    for attempt in range(3):
 
         try:
-            esp.close()
-        except:
-            pass
 
-        esp = None
+            if esp is None or not esp.is_open:
 
-        base_connected = False
+                print(
+                    f"🔄 Reconnecting "
+                    f"(Attempt {attempt+1}/3)"
+                )
 
-        speak_state("Base disconnected")
+                if not connect_esp():
+                    continue
 
-        return False
+            with serial_lock:
 
+                esp.write(
+                    f"{cmd}\n".encode()
+                )
+
+            return True
+
+        except Exception as e:
+
+            print(
+                f"❌ Send failed: {e}"
+            )
+
+            try:
+                esp.close()
+            except:
+                pass
+
+            esp = None
+
+            time.sleep(1)
+
+    print("❌ Skipping command")
+
+    return False
 # ==============================
 # MOVEMENT FUNCTIONS
 # ==============================
@@ -233,11 +339,25 @@ def forward():
 def backward():
     send('B')
 
-def left():
+def left(duration=None):
+
     send('L')
 
-def right():
+    if duration is not None:
+
+        time.sleep(duration)
+
+        stop()
+
+def right(duration=None):
+
     send('R')
+
+    if duration is not None:
+
+        time.sleep(duration)
+
+        stop()
 
 def stop():
     send('S')

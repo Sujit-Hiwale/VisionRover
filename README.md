@@ -224,6 +224,14 @@ python app.py
 
 ---
 
+## Companion Android Application
+
+An optional Android application is available for sending commands to VisionRover from a mobile device.
+
+Repository:
+https://github.com/Sujit-Hiwale/NLP-Audio-Transmitter
+
+---
 ## Applications
 
 * Intelligent Robotics
